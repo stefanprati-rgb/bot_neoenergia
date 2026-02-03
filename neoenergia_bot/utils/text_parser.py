@@ -19,6 +19,7 @@ class WhatsAppBotParser:
     def normalize(text):
         if not text:
             return ""
+        # Remove acentos e converte para minúsculas para robustez total
         return unidecode(text).lower().strip()
 
     @staticmethod
@@ -39,26 +40,26 @@ class WhatsAppBotParser:
     def analisar(self, mensagem):
         if not mensagem:
             return Acao.DESCONHECIDO
-
+            
         msg = self.normalize(mensagem)
         
-        # 1. Menu / Início
+        # 1. Gatilhos de Menu (Incluindo variações do log)
         if any(x in msg for x in ['escolha o servico', 'para comecar', 'ver opcoes', 'ver outro servico', 'clique no botao abaixo']):
             return Acao.SELECIONAR_MENU
             
-        # 2. Solicitação de Código (UC)
+        # 2. Pedido de Código (UC)
         if any(x in msg for x in ['codigo do cliente', 'digite o codigo', 'informe o codigo']):
             return Acao.ENVIAR_CODIGO
             
-        # 3. Documento (CPF/CNPJ)
+        # 3. Pedido de Documento (CPF/CNPJ)
         if 'cpf ou cnpj' in msg:
             return Acao.ENVIAR_DOCUMENTO
             
-        # 4. Confirmação de Dados
+        # 4. Confirmação de Endereço
         if any(x in msg for x in ['sua unidade consumidora e', 'posso seguir com a solicitacao', 'posso te ajudar com algo mais']):
             return Acao.CONFIRMAR_DADOS
             
-        # 5. Sucesso (Fatura e PIX)
+        # 5. Sucesso (Link PDF ou Pix)
         if any(x in msg for x in ['boleto.pdf', 'pix copia e cola', 'encontrei 1 fatura', 'informacoes para pagamento']):
             return Acao.BAIXAR_FATURA
             
@@ -70,18 +71,18 @@ class WhatsAppBotParser:
         if any(x in msg for x in ['nao consegui localizar', 'cadastro esteja desatualizado']):
             return Acao.ERRO_CADASTRO
             
-        # 8. Persistência (Robô dormiu?)
-        if any(x in msg for x in ['ainda estou aqui', 'o que gostaria de fazer agora']):
+        # 8. Recuperação (Bot esperando)
+        if any(x in msg for x in ['ainda estou aqui', 'o que gostaria de fazer agora', 'posso ajudar com mais alguma coisa']):
             return Acao.RECUPERAR
             
-        # 9. Encerramento / Timeout
+        # 9. Encerramento
         if any(x in msg for x in ['vou encerrar', 'agradecemos o seu contato', 'dica de seguranca', 'encerraremos seu atendimento']):
             return Acao.REINICIAR
-            
+
         # Gatilho de segurança para evitar atendente humano
         if 'meu nome e' in msg and 'vou te auxiliar' in msg:
              return Acao.HUMANO
-             
+
         return Acao.DESCONHECIDO
 
 def analisar_mensagem(texto):

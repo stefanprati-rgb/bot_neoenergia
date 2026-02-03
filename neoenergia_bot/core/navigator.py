@@ -135,88 +135,72 @@ class WhatsAppNavigator:
             raise e # Propaga o erro para o worker registrar no log da GUI
 
     # --- Interação com Modal ---
-    def selecionar_opcao_modal(self, texto_opcao="2ª via"):
-        logger.info(f"🖱️ [Navigator] Selecionando opção: {texto_opcao}")
-        try:
-            # 1. Verifica/Abre Modal
-            if not self._encontrar_elemento(By.CSS_SELECTOR, "div[role='dialog']", timeout=2):
-                logger.info("📋 Abrindo modal...")
-                # Busca botão 'Ver opções' (Match parcial no texto do span)
+    def selecionar_opcao_menu(self, texto_alvo):
+        logger.info(f"🖱️ [Navigator] Selecionando opção: '{texto_alvo}'")
+        
+        # 1. Tenta Abrir o Modal (Se não estiver aberto)
+        if not self._is_modal_open():
+            try:
+                # Busca botão 'Ver opções' de forma tolerante a maiúsculas/minúsculas
                 btn_opcoes = self.wait.until(EC.element_to_be_clickable(
-                    (By.XPATH, "//button[.//span[contains(text(), 'Ver opções') or contains(text(), 'ver opções')]]")
+                    (By.XPATH, "//button[.//span[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'ver opções')]]")
                 ))
-                self._click_js(btn_opcoes)
-            
-            # 2. Aguarda Animação
-            self.wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "div[role='dialog']")))
-            time.sleep(1) 
+                self.driver.execute_script("arguments[0].click();", btn_opcoes)
+                # Espera o modal aparecer no DOM
+                self.wait.until(EC.visibility_of_element_located((By.XPATH, "//div[@role='dialog']")))
+                time.sleep(1) # Estabilização da animação
+            except Exception as e:
+                logger.warning(f"⚠️ Modal não abriu (pode já estar aberto ou falhou): {e}")
 
-            # 3. Busca a Opção (Estratégia Híbrida: Texto -> Pai -> Radio)
-            opcao_element = self.wait.until(EC.presence_of_element_located(
-                (By.XPATH, f"//div[@role='dialog']//span[contains(text(), '{texto_opcao}')]")
-            ))
-            
-            # Sobe até achar o elemento clicável (role='radio' ou input)
-            radio_div = opcao_element.find_element(By.XPATH, "./ancestor::div[@role='radio'] | ./ancestor::div[@role='button']")
-            
-            # Garante visibilidade (Scroll)
-            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", radio_div)
-            time.sleep(0.5)
-            
-            # Clique JS
-            self._click_js(radio_div)
-            logger.info(f"✅ Opção '{texto_opcao}' marcada.")
-            
-            # 4. Enviar (Botão Verde)
-            time.sleep(0.5)
-            btn_enviar = self.wait.until(EC.element_to_be_clickable(
-                (By.CSS_SELECTOR, "span[data-icon='send'], span[data-icon='next']")
-            ))
-            self._click_js(btn_enviar)
-            
-            # Aguarda fechamento
-            self.wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, "div[role='dialog']")))
-            return True
-        except Exception as e:
-            logger.warning(f"⚠️ Erro no clique JS: {e}. Tentando fallback Teclado...")
-            return self._fallback_teclado_modal()
-
-    def _fallback_teclado_modal(self):
-        """Estratégia 'Ninja': TABs e SPACE"""
+        # 2. Seleciona a Opção (CORREÇÃO DO ERRO JS)
         try:
-            actions = ActionChains(self.driver)
-            # Foca no modal
-            self.driver.find_element(By.CSS_SELECTOR, "div[role='dialog']").click()
+            # Estratégia: Encontrar o ELEMENTO CLICÁVEL (div role='radio') que contém o TEXTO desejado.
+            # Isso evita clicar no texto puro (que causa o erro 'click is not a function')
+            xpath_opcao = f"//div[@role='dialog']//div[@role='radio'][.//span[contains(text(), '{texto_alvo}')]]"
             
-            # Sequência: 4 TABs -> SPACE -> 7 TABs -> SPACE
-            for _ in range(4): 
-                actions.send_keys(Keys.TAB).perform()
-                time.sleep(0.1)
-            actions.send_keys(Keys.SPACE).perform() # Marca
+            # Se não achar pelo texto visual, tenta pelo aria-label (Backup)
+            if not self.driver.find_elements(By.XPATH, xpath_opcao):
+                 xpath_opcao = f"//div[@role='dialog']//div[@role='radio' and contains(@aria-label, '{texto_alvo}')]"
+
+            elemento_clicavel = self.wait.until(EC.presence_of_element_located((By.XPATH, xpath_opcao)))
+            
+            # Garante que está visível
+            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elemento_clicavel)
             time.sleep(0.5)
-            for _ in range(7): 
-                actions.send_keys(Keys.TAB).perform()
-                time.sleep(0.1)
-            actions.send_keys(Keys.SPACE).perform() # Envia
+            
+            # Clique JS no Elemento (Agora seguro)
+            self.driver.execute_script("arguments[0].click();", elemento_clicavel)
+            logger.info(f"✅ Opção '{texto_alvo}' marcada.")
+            time.sleep(0.5)
+
+            # 3. Clica em Enviar
+            btn_enviar = self.wait.until(EC.element_to_be_clickable(
+                (By.XPATH, "//div[@role='dialog']//span[@data-icon='send']/ancestor::div[@role='button'] | //span[@data-icon='send']")
+            ))
+            self.driver.execute_script("arguments[0].click();", btn_enviar)
+            
+            # Aguarda o modal sumir
+            self.wait.until(EC.invisibility_of_element_located((By.XPATH, "//div[@role='dialog']")))
             return True
+
         except Exception as e:
-            logger.error(f"❌ Erro total (Mouse e Teclado): {e}")
+            logger.error(f"❌ Erro ao selecionar opção: {e}")
+            self.fechar_modal_se_aberto() # Segurança
             return False
 
+    def _is_modal_open(self):
+        try:
+            return self.driver.find_element(By.XPATH, "//div[@role='dialog']").is_displayed()
+        except:
+            return False
 
     def fechar_modal_se_aberto(self):
-        """Tenta fechar o modal usando ESC e clicando no botão de fechar se necessário."""
         try:
-            # Tenta ESC primeiro (mais rápido)
             ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
-            time.sleep(0.5)
-            
-            # Verifica se ainda existe
-            if self.driver.find_elements(By.XPATH, '//div[@role="dialog"]'):
-                botao_fechar = self.driver.find_element(By.XPATH, '//button[@aria-label="Fechar"]')
-                self.driver.execute_script("arguments[0].click();", botao_fechar)
         except:
             pass
+
+
 
     def ler_ultima_mensagem(self):
         """
@@ -386,7 +370,7 @@ class WhatsAppNavigator:
                 acao_existente = analisar_mensagem(msg_existente)
                 if acao_existente == Acao.SELECIONAR_MENU:
                     log("📋 Menu já detectado na tela. Pulando saudação inicial.")
-                    if self.selecionar_opcao_modal("2ª via"):
+                    if self.selecionar_opcao_menu("2ª via"):
                         cliente_dados['ULTIMA_MSG_PROCESSADA'] = msg_existente
                         cliente_dados['INICIO_ATENDIMENTO'] = time.time()
                         return 'AGUARDANDO_BOT', 'EM_ANDAMENTO'
@@ -440,7 +424,7 @@ class WhatsAppNavigator:
         log(f"⚙️ Executando: {acao.value}")
 
         if acao == Acao.SELECIONAR_MENU:
-            if not self.selecionar_opcao_modal("2ª via"):
+            if not self.selecionar_opcao_menu("2ª via"):
                 self.enviar_mensagem("2ª via")
             return 'AGUARDANDO_BOT', 'EM_ANDAMENTO'
 

@@ -117,56 +117,10 @@ class BotWorker(threading.Thread):
                         self.log(f"⚠️ Distribuidora '{distribuidora_raw}' não mapeada. Removendo.")
                         continue
 
-                    # 4. Execução do Turno Decisivo
-                    ultima_msg = self.navigator.ler_ultima_mensagem()
-                    acao = self.parser.analisar(ultima_msg)
-                    self.log(f"🤖 Estado Atual: {acao.name} | Msg: {ultima_msg[:30]}...")
-
-                    status_passo = "EM_ANDAMENTO"
-                    finalizar = False
-
-                    if acao == Acao.SELECIONAR_MENU:
-                        self.navigator.selecionar_opcao_modal("2ª via")
+                    # Executa o processamento completo para o cliente no seu turno
+                    status_passo = self.processar_cliente(cliente_turno, nome_bot)
                     
-                    elif acao == Acao.ENVIAR_CODIGO:
-                        self.log(f"📤 Enviando Código: {cliente_turno.get('NUMEROCLIENTE')}")
-                        self.navigator.enviar_mensagem(str(cliente_turno.get('NUMEROCLIENTE')))
-                    
-                    elif acao == Acao.ENVIAR_DOCUMENTO:
-                        doc = util.limpar_cpf_cnpj(cliente_turno.get('CNPJ', ''))
-                        self.log(f"📤 Enviando Documento: {doc}")
-                        self.navigator.enviar_mensagem(doc)
-                    
-                    elif acao == Acao.CONFIRMAR_DADOS:
-                        self.navigator.enviar_mensagem("Sim")
-                    
-                    elif acao == Acao.BAIXAR_FATURA:
-                        if self.navigator.baixar_fatura_e_salvar(cliente_turno):
-                            status_passo = "SUCESSO"
-                            finalizar = True
-                        else:
-                            status_passo = "ERRO_DOWNLOAD"
-                    
-                    elif acao == Acao.NADA_CONSTA:
-                        status_passo = "NADA_CONSTA"
-                        finalizar = True
-                    
-                    elif acao == Acao.ERRO_CADASTRO:
-                        status_passo = "ERRO_CADASTRO"
-                        finalizar = True
-                    
-                    elif acao == Acao.RECUPERAR or acao == Acao.REINICIAR:
-                        self.navigator.enviar_mensagem("Olá")
-                        time.sleep(3)
-                    
-                    elif acao == Acao.HUMANO:
-                        self.log("⚠️ Bot transferiu para humano. Abortando cliente.")
-                        status_passo = "ERRO_HUMANO"
-                        finalizar = True
-
-                    cliente_turno['ULTIMA_INTERACAO'] = time.time()
-                    
-                    if finalizar:
+                    if status_passo != "EM_ANDAMENTO":
                         self.log(f"🏁 Cliente {cliente_turno.get('RAZÃOSOCIALFATURAMENTO')} concluído. Status: {status_passo}")
                         self.log_queue.put(f"Status: {status_passo}")
                         state_manager.atualizar_status(
@@ -175,6 +129,7 @@ class BotWorker(threading.Thread):
                             status_passo
                         )
                     else:
+                        cliente_turno['ULTIMA_INTERACAO'] = time.time()
                         fila_clientes.append(cliente_turno)
                 
                 except Exception as e:
@@ -199,3 +154,68 @@ class BotWorker(threading.Thread):
                 except:
                     pass
             self.log("💤 Worker finalizado.")
+
+    def processar_cliente(self, cliente, nome_bot):
+        """Implementa a máquina de estados completa para um único cliente."""
+        # 1. Abre o chat (Garante foco)
+        if not self.navigator.buscar_contato(nome_bot):
+            return "EM_ANDAMENTO"
+
+        # 2. Inicia se necessário
+        if cliente.get('ESTADO_ATUAL') == 'INICIO':
+            self.navigator.enviar_mensagem("Olá")
+            cliente['ESTADO_ATUAL'] = 'AGUARDANDO_BOT'
+            return "EM_ANDAMENTO"
+
+        tentativas = 0
+        while tentativas < 10:
+            if self.stop_event.is_set(): return "INTERROMPIDO"
+            
+            ultima_msg = self.navigator.ler_ultima_mensagem()
+            acao = self.parser.analisar(ultima_msg)
+            
+            self.log(f"🤖 Estado: {acao.name} | Msg: {ultima_msg[:30]}...")
+            
+            if acao == Acao.SELECIONAR_MENU or acao == Acao.RECUPERAR:
+                if not self.navigator.selecionar_opcao_menu("2ª via"):
+                    self.navigator.enviar_mensagem("2ª via")
+                
+            elif acao == Acao.ENVIAR_CODIGO:
+                self.navigator.enviar_mensagem(str(cliente.get('NUMEROCLIENTE')))
+                
+            elif acao == Acao.ENVIAR_DOCUMENTO:
+                # Limpa pontuação do CPF/CNPJ (utilizando o util criado)
+                doc = util.limpar_cpf_cnpj(cliente.get('CNPJ', cliente.get('CNPJ_CPF', '')))
+                self.navigator.enviar_mensagem(doc)
+                
+            elif acao == Acao.CONFIRMAR_DADOS:
+                self.navigator.enviar_mensagem("Sim")
+                
+            elif acao == Acao.BAIXAR_FATURA:
+                self.log("✅ Fatura gerada! Baixando...")
+                if self.navigator.baixar_fatura_e_salvar(cliente):
+                    return "SUCESSO"
+                return "ERRO_DOWNLOAD"
+                
+            elif acao == Acao.NADA_CONSTA:
+                return "NADA_CONSTA"
+                
+            elif acao == Acao.ERRO_CADASTRO:
+                return "ERRO_CADASTRO"
+                
+            elif acao == Acao.REINICIAR:
+                self.navigator.enviar_mensagem("Olá")
+                time.sleep(3)
+                
+            elif acao == Acao.HUMANO:
+                self.log("⚠️ Bot transferiu para humano. Abortando cliente.")
+                return "ERRO_HUMANO"
+
+            elif acao == Acao.DESCONHECIDO:
+                # Se não entendeu e já mandamos algo, espera um pouco para ver se chega msg nova
+                time.sleep(2)
+                
+            tentativas += 1
+            time.sleep(2) # Ritmo de leitura
+            
+        return "TIMEOUT"
