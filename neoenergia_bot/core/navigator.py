@@ -220,24 +220,20 @@ class WhatsAppNavigator:
 
     def ler_ultima_mensagem(self):
         """
-        Lê o texto da última bolha de mensagem RECEBIDA.
-        Retorna vazio se a última mensagem absoluta na tela for enviada pelo robô (esperando resposta).
+        Lê o texto da última bolha de mensagem RECEBIDA (do bot).
+        Ignora mensagens enviadas pelo robô (message-out).
         """
         try:
-            # Pega todas as mensagens (In e Out) para verificar a ordem cronológica
-            todas_as_msgs = self.driver.find_elements(By.XPATH, "//div[contains(@class, 'message-in')] | //div[contains(@class, 'message-out')]")
-            if not todas_as_msgs:
+            # Pega APENAS as mensagens recebidas (do bot)
+            msgs_recebidas = self.driver.find_elements(By.XPATH, "//div[contains(@class, 'message-in')]")
+            if not msgs_recebidas:
                 return ""
             
-            ultima_absoluta = todas_as_msgs[-1]
-            classe_ultima = ultima_absoluta.get_attribute("class")
+            # Pega a última mensagem recebida
+            ultima_recebida = msgs_recebidas[-1]
             
-            # Se a última mensagem na tela foi enviada pelo robô (message-out), aguardamos
-            if "message-out" in classe_ultima:
-                return ""
-                
-            # Se for de entrada (message-in), extraímos o texto
-            texto_el = ultima_absoluta.find_element(*selectors.LAST_MESSAGE_TEXT)
+            # Extrai o texto
+            texto_el = ultima_recebida.find_element(*selectors.LAST_MESSAGE_TEXT)
             return texto_el.text
             
         except Exception:

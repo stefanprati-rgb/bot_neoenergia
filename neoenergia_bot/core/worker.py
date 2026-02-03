@@ -168,12 +168,21 @@ class BotWorker(threading.Thread):
             return "EM_ANDAMENTO"
 
         tentativas = 0
+        ultima_msg_processada = cliente.get('ULTIMA_MSG_PROCESSADA', '')
+        
         while tentativas < 10:
             if self.stop_event.is_set(): return "INTERROMPIDO"
             
             ultima_msg = self.navigator.ler_ultima_mensagem()
-            acao = self.parser.analisar(ultima_msg)
             
+            # Se a mensagem é a mesma que já processamos, aguarda nova resposta
+            if ultima_msg and ultima_msg == ultima_msg_processada:
+                self.log("⏳ Aguardando nova resposta do bot...")
+                time.sleep(3)
+                tentativas += 1
+                continue
+            
+            acao = self.parser.analisar(ultima_msg)
             self.log(f"🤖 Estado: {acao.name} | Msg: {ultima_msg[:30]}...")
             
             if acao == Acao.SELECIONAR_MENU or acao == Acao.RECUPERAR:
@@ -218,6 +227,10 @@ class BotWorker(threading.Thread):
             elif acao == Acao.DESCONHECIDO:
                 # Se não entendeu e já mandamos algo, espera um pouco para ver se chega msg nova
                 time.sleep(2)
+            
+            # Marca a mensagem como processada para não repetir ação
+            cliente['ULTIMA_MSG_PROCESSADA'] = ultima_msg
+            ultima_msg_processada = ultima_msg
                 
             tentativas += 1
             time.sleep(2) # Ritmo de leitura
