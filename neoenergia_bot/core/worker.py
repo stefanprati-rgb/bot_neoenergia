@@ -177,7 +177,11 @@ class BotWorker(threading.Thread):
             self.log(f"🤖 Estado: {acao.name} | Msg: {ultima_msg[:30]}...")
             
             if acao == Acao.SELECIONAR_MENU or acao == Acao.RECUPERAR:
-                if not self.navigator.selecionar_opcao_menu("2ª via"):
+                self.log("📋 Menu detectado. Abrindo modal...")
+                if self.navigator.selecionar_opcao_menu("2ª via"):
+                    self.log("✅ Opção '2ª via' selecionada.")
+                else:
+                    self.log("⚠️ Falha ao usar modal. Tentando via texto...")
                     self.navigator.enviar_mensagem("2ª via")
                 
             elif acao == Acao.ENVIAR_CODIGO:

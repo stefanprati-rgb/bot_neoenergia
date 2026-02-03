@@ -136,56 +136,72 @@ class WhatsAppNavigator:
 
     # --- Interação com Modal ---
     def selecionar_opcao_menu(self, texto_alvo):
-        logger.info(f"🖱️ [Navigator] Selecionando opção: '{texto_alvo}'")
+        logger.info(f"🖱️ [Navigator] Tentando selecionar opção: '{texto_alvo}'")
         
-        # 1. Tenta Abrir o Modal (Se não estiver aberto)
-        if not self._is_modal_open():
+        # 1. Abre o Modal se necessário
+        max_tentativas_abrir = 3
+        for tentativa in range(max_tentativas_abrir):
+            if self._is_modal_open():
+                logger.info("✅ Modal já está aberto.")
+                break
+                
             try:
-                # Busca botão 'Ver opções' de forma tolerante a maiúsculas/minúsculas
+                # Procura pelo botão "Ver opções" de forma mais tolerante
                 btn_opcoes = self.wait.until(EC.element_to_be_clickable(
-                    (By.XPATH, "//button[.//span[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'ver opções')]]")
+                    (By.XPATH, "//button[contains(., 'Ver opções') or contains(., 'Ver Opções') or contains(., 'VER OPÇÕES')]")
                 ))
+                
+                # Garante visibilidade
+                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn_opcoes)
+                time.sleep(0.5)
+                
+                # Clique via JS (mais confiável)
                 self.driver.execute_script("arguments[0].click();", btn_opcoes)
-                # Espera o modal aparecer no DOM
+                logger.info("🖱️ Clique no botão 'Ver opções' executado.")
+                
+                # Aguarda o modal aparecer
                 self.wait.until(EC.visibility_of_element_located((By.XPATH, "//div[@role='dialog']")))
-                time.sleep(1) # Estabilização da animação
+                time.sleep(1)  # Estabilização da animação
+                break
+                
             except Exception as e:
-                logger.warning(f"⚠️ Modal não abriu (pode já estar aberto ou falhou): {e}")
-
-        # 2. Seleciona a Opção (CORREÇÃO DO ERRO JS)
+                logger.warning(f"⚠️ Tentativa {tentativa + 1}/{max_tentativas_abrir} falhou ao abrir modal: {e}")
+                if tentativa == max_tentativas_abrir - 1:
+                    logger.error("❌ Não foi possível abrir o modal após todas as tentativas.")
+                    return False
+                time.sleep(2)
+        
+        # 2. Seleciona a Opção
         try:
-            # Estratégia: Encontrar o ELEMENTO CLICÁVEL (div role='radio') que contém o TEXTO desejado.
-            # Isso evita clicar no texto puro (que causa o erro 'click is not a function')
+            # XPath robusto para encontrar a opção desejada
             xpath_opcao = f"//div[@role='dialog']//div[@role='radio'][.//span[contains(text(), '{texto_alvo}')]]"
             
-            # Se não achar pelo texto visual, tenta pelo aria-label (Backup)
-            if not self.driver.find_elements(By.XPATH, xpath_opcao):
-                 xpath_opcao = f"//div[@role='dialog']//div[@role='radio' and contains(@aria-label, '{texto_alvo}')]"
-
             elemento_clicavel = self.wait.until(EC.presence_of_element_located((By.XPATH, xpath_opcao)))
             
-            # Garante que está visível
+            # Garante visibilidade
             self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elemento_clicavel)
             time.sleep(0.5)
             
-            # Clique JS no Elemento (Agora seguro)
+            # Clique JS no Elemento
             self.driver.execute_script("arguments[0].click();", elemento_clicavel)
-            logger.info(f"✅ Opção '{texto_alvo}' marcada.")
+            logger.info(f"✅ Opção '{texto_alvo}' marcada com sucesso.")
             time.sleep(0.5)
 
             # 3. Clica em Enviar
             btn_enviar = self.wait.until(EC.element_to_be_clickable(
-                (By.XPATH, "//div[@role='dialog']//span[@data-icon='send']/ancestor::div[@role='button'] | //span[@data-icon='send']")
+                (By.XPATH, "//div[@role='dialog']//span[@data-icon='send']/ancestor::div[@role='button']")
             ))
             self.driver.execute_script("arguments[0].click();", btn_enviar)
+            logger.info("📤 Opção enviada com sucesso.")
             
             # Aguarda o modal sumir
             self.wait.until(EC.invisibility_of_element_located((By.XPATH, "//div[@role='dialog']")))
+            time.sleep(2)  # Aguarda o bot processar
             return True
 
         except Exception as e:
-            logger.error(f"❌ Erro ao selecionar opção: {e}")
-            self.fechar_modal_se_aberto() # Segurança
+            logger.error(f"❌ Erro ao selecionar opção no modal: {e}")
+            self.fechar_modal_se_aberto()
             return False
 
     def _is_modal_open(self):
@@ -361,20 +377,28 @@ class WhatsAppNavigator:
             return estado_atual, 'EM_ANDAMENTO' # Tenta novamente na próxima rodada
 
         # 3. Lógica de Estados
+        # 3. Lógica de Estados
         if estado_atual == 'INICIO':
             log(f"🚀 Iniciando atendimento para {cliente_dados.get('NUMEROCLIENTE')}...")
             
-            # Verificação de Contexto: Se o menu já está na tela, não manda 'Olá'
+            # Verificação: Se o menu já está visível, pula a saudação
             msg_existente = self.ler_ultima_mensagem()
             if msg_existente:
                 acao_existente = analisar_mensagem(msg_existente)
                 if acao_existente == Acao.SELECIONAR_MENU:
-                    log("📋 Menu já detectado na tela. Pulando saudação inicial.")
+                    log("📋 Menu já detectado. Pulando saudação...")
                     if self.selecionar_opcao_menu("2ª via"):
                         cliente_dados['ULTIMA_MSG_PROCESSADA'] = msg_existente
                         cliente_dados['INICIO_ATENDIMENTO'] = time.time()
                         return 'AGUARDANDO_BOT', 'EM_ANDAMENTO'
-
+                    else:
+                        # Se falhar ao usar o modal, tenta texto
+                        self.enviar_mensagem("2ª via")
+                        cliente_dados['INICIO_ATENDIMENTO'] = time.time()
+                        return 'AGUARDANDO_BOT', 'EM_ANDAMENTO'
+            
+            # Só envia "Olá" se realmente precisar iniciar
+            log("💬 Enviando saudação inicial...")
             if self.enviar_mensagem("Olá"):
                 cliente_dados['INICIO_ATENDIMENTO'] = time.time()
                 return 'AGUARDANDO_BOT', 'EM_ANDAMENTO'
