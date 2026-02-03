@@ -1,0 +1,201 @@
+import threading
+import logging
+import time
+import traceback
+from neoenergia_bot.utils.data_handler import get_clients_to_process
+from neoenergia_bot.core.driver import iniciar_driver
+from neoenergia_bot.core.navigator import WhatsAppNavigator
+from neoenergia_bot.config.settings import CONTATO_NEOENERGIA, MAPA_DISTRIBUIDORAS
+from neoenergia_bot.utils.text_parser import WhatsAppBotParser, Acao
+from neoenergia_bot.utils import util
+
+# Configuração de logging
+logger = logging.getLogger(__name__)
+
+class BotWorker(threading.Thread):
+    """
+    Worker que executa a automação em uma thread separada para não travar a GUI.
+    """
+    def __init__(self, log_queue, stop_event, file_path=None, resume_enabled=True):
+        super().__init__()
+        self.log_queue = log_queue
+        self.stop_event = stop_event
+        self.file_path = file_path
+        self.resume_enabled = resume_enabled
+        self.parser = WhatsAppBotParser()
+        self.daemon = True # Garante que a thread morra se o programa principal fechar
+
+    def log(self, message):
+        """Envia mensagem para a fila de logs que será lida pela GUI."""
+        self.log_queue.put(message)
+        logger.info(message)
+
+    def run(self):
+        self.driver = None
+        try:
+            self.log("🤖 Iniciando motor do robô...")
+            
+            # 1. Carregamento de dados
+            self.log("📂 Carregando base de clientes...")
+            df = get_clients_to_process(self.file_path)
+            total_clientes = len(df)
+            self.log(f"✅ {total_clientes} clientes carregados com sucesso.")
+
+            # 2. Inicialização do Selenium
+            self.log("🌐 Abrindo navegador e conectando ao WhatsApp...")
+            self.driver = iniciar_driver()
+            self.navigator = WhatsAppNavigator(self.driver)
+            
+            self.log("🕒 Aguardando login no WhatsApp Web (leia o QR Code se necessário)...")
+            self.driver.get("https://web.whatsapp.com")
+            
+            # Aguarda o WhatsApp carregar (seletor da lista de chats)
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+            from neoenergia_bot.config.selectors import selectors
+            
+            try:
+                WebDriverWait(self.driver, 60).until(EC.presence_of_element_located(selectors.APP_LOADED_SIGNAL))
+                self.log("✅ WhatsApp carregado!")
+            except:
+                self.log("⚠️ Tempo esgotado para login ou carregamento lento.")
+
+            # 3. Gerenciamento de Fila Circular Híbrida (Prioridade + Round-Robin)
+            from neoenergia_bot.utils.state_manager import StateManager
+            state_manager = StateManager()
+
+            # Converte o DataFrame para dicionários, filtrando quem já foi processado
+            fila_completa = [row.to_dict() for _, row in df.iterrows()]
+            fila_clientes = []
+            
+            for c in fila_completa:
+                id_cliente = str(c.get('NUMEROCLIENTE', ''))
+                if self.resume_enabled and state_manager.verificar_cliente(id_cliente):
+                    # self.log(f"⏩ Cliente {id_cliente} já processado anteriormente. Pulando...")
+                    continue
+                fila_clientes.append(c)
+
+            bots_monitorados = list(MAPA_DISTRIBUIDORAS.values())
+            self.log(f"🔄 Iniciando motor Híbrido com {len(fila_clientes)} clientes ativos.")
+
+            while fila_clientes:
+                if self.stop_event.is_set():
+                    self.log("🛑 Interrupção solicitada. Parando fila...")
+                    break
+
+                # --- FASE 1: PRIORIDADE (Notificações) ---
+                bot_prioritario = self.navigator.escanear_mensagens_nao_lidas(bots_monitorados)
+                cliente_turno = None
+                
+                if bot_prioritario:
+                    for i, c in enumerate(fila_clientes):
+                        dist_xls = str(c.get('DISTRIBUIDORA', '')).upper()
+                        if any(k in dist_xls and v == bot_prioritario for k, v in MAPA_DISTRIBUIDORAS.items()):
+                            cliente_turno = fila_clientes.pop(i)
+                            break
+                
+                # --- FASE 2: PROGRESSO NORMAL (Round-Robin) ---
+                if not cliente_turno:
+                    cliente_turno = fila_clientes.pop(0)
+                    tempo_desde_ultima = time.time() - cliente_turno.get('ULTIMA_INTERACAO', 0)
+                    if tempo_desde_ultima < 5:
+                        fila_clientes.append(cliente_turno)
+                        time.sleep(1)
+                        continue
+
+                # --- EXECUÇÃO DO TURNO ---
+                try:
+                    distribuidora_raw = str(cliente_turno.get('DISTRIBUIDORA', '')).upper()
+                    nome_bot = None
+                    for chave, nome_contato in MAPA_DISTRIBUIDORAS.items():
+                        if chave in distribuidora_raw:
+                            nome_bot = nome_contato
+                            break
+                    
+                    if not nome_bot:
+                        self.log(f"⚠️ Distribuidora '{distribuidora_raw}' não mapeada. Removendo.")
+                        continue
+
+                    # 4. Execução do Turno Decisivo
+                    ultima_msg = self.navigator.ler_ultima_mensagem()
+                    acao = self.parser.analisar(ultima_msg)
+                    self.log(f"🤖 Estado Atual: {acao.name} | Msg: {ultima_msg[:30]}...")
+
+                    status_passo = "EM_ANDAMENTO"
+                    finalizar = False
+
+                    if acao == Acao.SELECIONAR_MENU:
+                        self.navigator.selecionar_opcao_modal("2ª via")
+                    
+                    elif acao == Acao.ENVIAR_CODIGO:
+                        self.log(f"📤 Enviando Código: {cliente_turno.get('NUMEROCLIENTE')}")
+                        self.navigator.enviar_mensagem(str(cliente_turno.get('NUMEROCLIENTE')))
+                    
+                    elif acao == Acao.ENVIAR_DOCUMENTO:
+                        doc = util.limpar_cpf_cnpj(cliente_turno.get('CNPJ', ''))
+                        self.log(f"📤 Enviando Documento: {doc}")
+                        self.navigator.enviar_mensagem(doc)
+                    
+                    elif acao == Acao.CONFIRMAR_DADOS:
+                        self.navigator.enviar_mensagem("Sim")
+                    
+                    elif acao == Acao.BAIXAR_FATURA:
+                        if self.navigator.baixar_fatura_e_salvar(cliente_turno):
+                            status_passo = "SUCESSO"
+                            finalizar = True
+                        else:
+                            status_passo = "ERRO_DOWNLOAD"
+                    
+                    elif acao == Acao.NADA_CONSTA:
+                        status_passo = "NADA_CONSTA"
+                        finalizar = True
+                    
+                    elif acao == Acao.ERRO_CADASTRO:
+                        status_passo = "ERRO_CADASTRO"
+                        finalizar = True
+                    
+                    elif acao == Acao.RECUPERAR or acao == Acao.REINICIAR:
+                        self.navigator.enviar_mensagem("Olá")
+                        time.sleep(3)
+                    
+                    elif acao == Acao.HUMANO:
+                        self.log("⚠️ Bot transferiu para humano. Abortando cliente.")
+                        status_passo = "ERRO_HUMANO"
+                        finalizar = True
+
+                    cliente_turno['ULTIMA_INTERACAO'] = time.time()
+                    
+                    if finalizar:
+                        self.log(f"🏁 Cliente {cliente_turno.get('RAZÃOSOCIALFATURAMENTO')} concluído. Status: {status_passo}")
+                        self.log_queue.put(f"Status: {status_passo}")
+                        state_manager.atualizar_status(
+                            cliente_turno.get('NUMEROCLIENTE'),
+                            distribuidora_raw,
+                            status_passo
+                        )
+                    else:
+                        fila_clientes.append(cliente_turno)
+                
+                except Exception as e:
+                    self.log(f"❌ Erro no turno de {cliente_turno.get('RAZÃOSOCIALFATURAMENTO')}: {str(e)}")
+                    continue
+
+            if not self.stop_event.is_set():
+                self.log("🏁 Processamento de todos os clientes finalizado!")
+            else:
+                self.log("⚠️ Processamento interrompido com clientes ainda na fila.")
+
+        except Exception as e:
+            error_msg = f"❌ Erro crítico no motor: {str(e)}"
+            self.log(error_msg)
+            logger.error(traceback.format_exc())
+        
+        finally:
+            if self.driver:
+                self.log("🔌 Fechando navegador...")
+                try:
+                    self.driver.quit()
+                except:
+                    pass
+            self.log("💤 Worker finalizado.")
