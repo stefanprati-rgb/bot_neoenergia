@@ -79,62 +79,65 @@ class BotWorker(threading.Thread):
             bots_monitorados = list(MAPA_DISTRIBUIDORAS.values())
             self.log(f"🔄 Iniciando motor Híbrido com {len(fila_clientes)} clientes ativos.")
 
+            # --- MODO SEQUENCIAL (DEBUG/STABILITY) ---
+            # Processa um cliente por vez até o final
+            
             while fila_clientes:
                 if self.stop_event.is_set():
                     self.log("🛑 Interrupção solicitada. Parando fila...")
                     break
 
-                # --- FASE 1: PRIORIDADE (Notificações) ---
-                bot_prioritario = self.navigator.escanear_mensagens_nao_lidas(bots_monitorados)
-                cliente_turno = None
+                # Pega o próximo cliente da fila (não devolve para o final imediatamente)
+                cliente_atual = fila_clientes[0] 
                 
-                if bot_prioritario:
-                    for i, c in enumerate(fila_clientes):
-                        dist_xls = str(c.get('DISTRIBUIDORA', '')).upper()
-                        if any(k in dist_xls and v == bot_prioritario for k, v in MAPA_DISTRIBUIDORAS.items()):
-                            cliente_turno = fila_clientes.pop(i)
-                            break
+                # Identificação
+                nome_cliente = cliente_atual.get('RAZÃOSOCIALFATURAMENTO', 'Cliente')
+                distribuidora_raw = str(cliente_atual.get('DISTRIBUIDORA', '')).upper()
                 
-                # --- FASE 2: PROGRESSO NORMAL (Round-Robin) ---
-                if not cliente_turno:
-                    cliente_turno = fila_clientes.pop(0)
-                    tempo_desde_ultima = time.time() - cliente_turno.get('ULTIMA_INTERACAO', 0)
-                    if tempo_desde_ultima < 5:
-                        fila_clientes.append(cliente_turno)
-                        time.sleep(1)
-                        continue
-
-                # --- EXECUÇÃO DO TURNO ---
-                try:
-                    distribuidora_raw = str(cliente_turno.get('DISTRIBUIDORA', '')).upper()
-                    nome_bot = None
-                    for chave, nome_contato in MAPA_DISTRIBUIDORAS.items():
-                        if chave in distribuidora_raw:
-                            nome_bot = nome_contato
-                            break
-                    
-                    if not nome_bot:
-                        self.log(f"⚠️ Distribuidora '{distribuidora_raw}' não mapeada. Removendo.")
-                        continue
-
-                    # Executa o processamento completo para o cliente no seu turno
-                    status_passo = self.processar_cliente(cliente_turno, nome_bot)
-                    
-                    if status_passo != "EM_ANDAMENTO":
-                        self.log(f"🏁 Cliente {cliente_turno.get('RAZÃOSOCIALFATURAMENTO')} concluído. Status: {status_passo}")
-                        self.log_queue.put(f"Status: {status_passo}")
-                        state_manager.atualizar_status(
-                            cliente_turno.get('NUMEROCLIENTE'),
-                            distribuidora_raw,
-                            status_passo
-                        )
-                    else:
-                        cliente_turno['ULTIMA_INTERACAO'] = time.time()
-                        fila_clientes.append(cliente_turno)
+                # Busca nome do bot
+                nome_bot = None
+                for chave, nome_contato in MAPA_DISTRIBUIDORAS.items():
+                    if chave in distribuidora_raw:
+                        nome_bot = nome_contato
+                        break
                 
-                except Exception as e:
-                    self.log(f"❌ Erro no turno de {cliente_turno.get('RAZÃOSOCIALFATURAMENTO')}: {str(e)}")
+                if not nome_bot:
+                    self.log(f"⚠️ Distribuidora '{distribuidora_raw}' não mapeada. Removendo cliente {nome_cliente}.")
+                    fila_clientes.pop(0) # Remove e segue
                     continue
+
+                # Loop de processamento do MESMO cliente
+                self.log(f"🔄 Iniciando processamento sequencial de: {nome_cliente}")
+                
+                cliente_finalizado = False
+                while not cliente_finalizado and not self.stop_event.is_set():
+                    try:
+                        # Executa um passo
+                        status_passo = self.processar_cliente(cliente_atual, nome_bot)
+                        
+                        # Se terminou ou deu erro fatal, marca como finalizado
+                        if status_passo not in ["EM_ANDAMENTO", "AGUARDANDO_BOT"]:
+                            self.log(f"🏁 Cliente {nome_cliente} finalizado. Resultado: {status_passo}")
+                            
+                            # Atualiza status persistente
+                            state_manager.atualizar_status(
+                                cliente_atual.get('NUMEROCLIENTE'),
+                                distribuidora_raw,
+                                status_passo
+                            )
+                            
+                            cliente_finalizado = True
+                            fila_clientes.pop(0) # Remove da fila só agora
+                            
+                        else:
+                            # Se continua, apenas dorme um pouco para não fritar a CPU
+                            time.sleep(1)
+                            
+                    except Exception as e:
+                        self.log(f"❌ Erro grave processando {nome_cliente}: {e}")
+                        logger.error(traceback.format_exc())
+                        fila_clientes.pop(0) # Remove para não travar
+                        cliente_finalizado = True
 
             if not self.stop_event.is_set():
                 self.log("🏁 Processamento de todos os clientes finalizado!")
@@ -157,12 +160,25 @@ class BotWorker(threading.Thread):
 
     def processar_cliente(self, cliente, nome_bot):
         """Implementa a máquina de estados completa para um único cliente."""
+        # Identificação do cliente para logs
+        cliente_id = str(cliente.get('NUMEROCLIENTE', 'DESCONHECIDO'))
+        razao_social = str(cliente.get('RAZÃOSOCIALFATURAMENTO', 'Cliente'))[:30]
+        
+        # Inicializa estado se não existir
+        if 'ESTADO_ATUAL' not in cliente or not cliente.get('ESTADO_ATUAL'):
+            cliente['ESTADO_ATUAL'] = 'INICIO'
+            cliente['ULTIMA_MSG_PROCESSADA'] = ''
+            cliente['TENTATIVAS_DESCONHECIDAS'] = 0
+            self.log(f"🆕 [{cliente_id}] {razao_social} - Iniciando novo atendimento")
+        
         # 1. Abre o chat (Garante foco)
         if not self.navigator.buscar_contato(nome_bot):
+            self.log(f"⚠️ [{cliente_id}] Falha ao abrir chat com {nome_bot}")
             return "EM_ANDAMENTO"
 
         # 2. Inicia se necessário
         if cliente.get('ESTADO_ATUAL') == 'INICIO':
+            self.log(f"👋 [{cliente_id}] Enviando saudação inicial")
             self.navigator.enviar_mensagem("Olá")
             cliente['ESTADO_ATUAL'] = 'AGUARDANDO_BOT'
             return "EM_ANDAMENTO"
@@ -177,51 +193,79 @@ class BotWorker(threading.Thread):
             
             # Se a mensagem é a mesma que já processamos, aguarda nova resposta
             if ultima_msg and ultima_msg == ultima_msg_processada:
-                self.log("⏳ Aguardando nova resposta do bot...")
+                if tentativas % 3 == 0:  # Log a cada 3 tentativas para não poluir
+                    self.log(f"⏳ [{cliente_id}] Aguardando nova resposta do bot... (tentativa {tentativas}/10)")
                 time.sleep(3)
                 tentativas += 1
                 continue
             
             acao = self.parser.analisar(ultima_msg)
-            self.log(f"🤖 Estado: {acao.name} | Msg: {ultima_msg[:30]}...")
+            msg_preview = ultima_msg[:50] if ultima_msg else "(vazio)"
+            self.log(f"🤖 [{cliente_id}] Ação: {acao.name} | Msg: {msg_preview}...")
             
             if acao == Acao.SELECIONAR_MENU or acao == Acao.RECUPERAR:
-                self.log("📋 Menu detectado. Abrindo modal...")
+                self.log(f"📋 [{cliente_id}] Menu detectado. Abrindo modal...")
                 if self.navigator.selecionar_opcao_menu("2ª via"):
-                    self.log("✅ Opção '2ª via' selecionada.")
+                    self.log(f"✅ [{cliente_id}] Opção '2ª via' selecionada com sucesso")
                 else:
-                    self.log("⚠️ Falha ao usar modal. Tentando via texto...")
+                    self.log(f"⚠️ [{cliente_id}] Falha ao usar modal. Tentando via texto...")
                     self.navigator.enviar_mensagem("2ª via")
                 
             elif acao == Acao.ENVIAR_CODIGO:
-                self.navigator.enviar_mensagem(str(cliente.get('NUMEROCLIENTE')))
+                codigo = str(cliente.get('NUMEROCLIENTE', ''))
+                self.log(f"🔢 [{cliente_id}] Enviando código do cliente: {codigo}")
+                self.navigator.enviar_mensagem(codigo)
                 
             elif acao == Acao.ENVIAR_DOCUMENTO:
-                # Limpa pontuação do CPF/CNPJ (utilizando o util criado)
-                doc = util.limpar_cpf_cnpj(cliente.get('CNPJ', cliente.get('CNPJ_CPF', '')))
+                # Limpa e valida CPF/CNPJ
+                doc_raw = cliente.get('CNPJ', cliente.get('CNPJ_CPF', ''))
+                doc = util.limpar_cpf_cnpj(doc_raw)
+                
+                if not doc or len(doc) not in [11, 14]:
+                    self.log(f"❌ [{cliente_id}] Documento inválido: '{doc_raw}' -> '{doc}'")
+                    return "ERRO_DOCUMENTO"
+                
+                doc_tipo = "CPF" if len(doc) == 11 else "CNPJ"
+                self.log(f"📄 [{cliente_id}] Enviando {doc_tipo}: {doc[:3]}***{doc[-2:]}")
                 self.navigator.enviar_mensagem(doc)
                 
             elif acao == Acao.CONFIRMAR_DADOS:
+                self.log(f"✔️ [{cliente_id}] Confirmando dados")
                 self.navigator.enviar_mensagem("Sim")
                 
             elif acao == Acao.BAIXAR_FATURA:
-                self.log("✅ Fatura gerada! Baixando...")
-                if self.navigator.baixar_fatura_e_salvar(cliente):
-                    return "SUCESSO"
+                self.log(f"💾 [{cliente_id}] Fatura disponível! Iniciando download...")
+                
+                # Retry de download (até 3 tentativas)
+                max_tentativas_download = 3
+                for tentativa_dl in range(1, max_tentativas_download + 1):
+                    self.log(f"📥 [{cliente_id}] Tentativa de download {tentativa_dl}/{max_tentativas_download}")
+                    if self.navigator.baixar_fatura_e_salvar(cliente):
+                        self.log(f"✅ [{cliente_id}] Download concluído com sucesso!")
+                        return "SUCESSO"
+                    
+                    if tentativa_dl < max_tentativas_download:
+                        self.log(f"⚠️ [{cliente_id}] Falha no download. Aguardando 3s para retry...")
+                        time.sleep(3)
+                
+                self.log(f"❌ [{cliente_id}] Falha no download após {max_tentativas_download} tentativas")
                 return "ERRO_DOWNLOAD"
                 
             elif acao == Acao.NADA_CONSTA:
+                self.log(f"ℹ️ [{cliente_id}] Sem faturas pendentes (Nada Consta)")
                 return "NADA_CONSTA"
                 
             elif acao == Acao.ERRO_CADASTRO:
+                self.log(f"❌ [{cliente_id}] Erro de cadastro detectado pelo bot")
                 return "ERRO_CADASTRO"
                 
             elif acao == Acao.REINICIAR:
+                self.log(f"🔄 [{cliente_id}] Bot encerrou conversa. Reiniciando fluxo...")
                 self.navigator.enviar_mensagem("Olá")
                 time.sleep(3)
                 
             elif acao == Acao.HUMANO:
-                self.log("⚠️ Bot transferiu para humano. Abortando cliente.")
+                self.log(f"👤 [{cliente_id}] Transferido para atendimento humano. Abortando.")
                 return "ERRO_HUMANO"
 
             elif acao == Acao.DESCONHECIDO:
@@ -235,4 +279,5 @@ class BotWorker(threading.Thread):
             tentativas += 1
             time.sleep(2) # Ritmo de leitura
             
+        self.log(f"⏱️ [{cliente_id}] Timeout atingido após {tentativas} tentativas")
         return "TIMEOUT"

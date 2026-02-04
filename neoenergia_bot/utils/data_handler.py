@@ -72,6 +72,17 @@ def get_clients_to_process(file_path: str = None) -> pd.DataFrame:
         file_path = os.path.join(base_dir, "data", "input", "base.xlsx")
     
     df = load_excel_data(file_path)
+
+    # -----------------------------------------------------------
+    # CORREÇÃO DE DUPLICATAS (Fix Loop Issue)
+    # Remove clientes duplicados mantendo apenas a primeira ocorrência
+    # -----------------------------------------------------------
+    if 'NUMEROCLIENTE' in df.columns:
+        total_antes = len(df)
+        df.drop_duplicates(subset=['NUMEROCLIENTE', 'DISTRIBUIDORA'], keep='first', inplace=True)
+        total_depois = len(df)
+        if total_antes != total_depois:
+            logging.warning(f"⚠️ Removidos {total_antes - total_depois} clientes duplicados da lista.")
     
     # Inicializa colunas de controle para arquitetura Round-Robin
     df['ESTADO_ATUAL'] = 'INICIO'

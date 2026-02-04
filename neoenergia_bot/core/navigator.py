@@ -146,21 +146,32 @@ class WhatsAppNavigator:
                 break
                 
             try:
-                # Procura pelo botão "Ver opções" de forma mais tolerante
-                btn_opcoes = self.wait.until(EC.element_to_be_clickable(
-                    (By.XPATH, "//button[contains(., 'Ver opções') or contains(., 'Ver Opções') or contains(., 'VER OPÇÕES')]")
-                ))
+                # Tentativa Robusta com Seletores Múltiplos
+                found_btn = None
+                for i in range(3):
+                    try:
+                        by, xpath = selectors.get_selector('BTN_VER_OPCOES', i)
+                        btn_opcoes = self.wait.until(EC.element_to_be_clickable((by, xpath)))
+                        found_btn = btn_opcoes
+                        logger.info(f"✅ Botão 'Ver opções' encontrado (estratégia {i})")
+                        break
+                    except:
+                        continue
+                
+                if not found_btn:
+                    raise Exception("Botão 'Ver opções' não encontrado com nenhum seletor.")
                 
                 # Garante visibilidade
-                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn_opcoes)
+                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", found_btn)
                 time.sleep(0.5)
                 
                 # Clique via JS (mais confiável)
-                self.driver.execute_script("arguments[0].click();", btn_opcoes)
+                self.driver.execute_script("arguments[0].click();", found_btn)
                 logger.info("🖱️ Clique no botão 'Ver opções' executado.")
                 
                 # Aguarda o modal aparecer
-                self.wait.until(EC.visibility_of_element_located((By.XPATH, "//div[@role='dialog']")))
+                modal_xpath = selectors.get_selector('MODAL_DIALOG', 0)[1]
+                self.wait.until(EC.visibility_of_element_located((By.XPATH, modal_xpath)))
                 time.sleep(1)  # Estabilização da animação
                 break
                 
@@ -187,15 +198,30 @@ class WhatsAppNavigator:
             logger.info(f"✅ Opção '{texto_alvo}' marcada com sucesso.")
             time.sleep(0.5)
 
-            # 3. Clica em Enviar
-            btn_enviar = self.wait.until(EC.element_to_be_clickable(
-                (By.XPATH, "//div[@role='dialog']//span[@data-icon='send']/ancestor::div[@role='button']")
-            ))
-            self.driver.execute_script("arguments[0].click();", btn_enviar)
-            logger.info("📤 Opção enviada com sucesso.")
+            # 3. Clica em Enviar (Robusto)
+            btn_enviar = None
+            for i in range(3):
+                try:
+                    by_send, xpath_send = selectors.get_selector('MODAL_SEND_BTN', i)
+                    btn_enviar = self.wait.until(EC.element_to_be_clickable((by_send, xpath_send)))
+                    break
+                except:
+                    continue
+            
+            if btn_enviar:
+                self.driver.execute_script("arguments[0].click();", btn_enviar)
+                logger.info("📤 Opção enviada com sucesso.")
+            else:
+                logger.error("❌ Botão de enviar do modal não encontrado.")
+                return False
             
             # Aguarda o modal sumir
-            self.wait.until(EC.invisibility_of_element_located((By.XPATH, "//div[@role='dialog']")))
+            try:
+                modal_xpath = selectors.get_selector('MODAL_DIALOG', 0)[1]
+                self.wait.until(EC.invisibility_of_element_located((By.XPATH, modal_xpath)))
+            except:
+                pass # Se não sumir, tudo bem, vamos em frente
+            
             time.sleep(2)  # Aguarda o bot processar
             return True
 
@@ -206,7 +232,9 @@ class WhatsAppNavigator:
 
     def _is_modal_open(self):
         try:
-            return self.driver.find_element(By.XPATH, "//div[@role='dialog']").is_displayed()
+            # Usa o seletor principal do modal
+            by, xpath = selectors.get_selector('MODAL_DIALOG', 0)
+            return self.driver.find_element(by, xpath).is_displayed()
         except:
             return False
 
@@ -318,11 +346,22 @@ class WhatsAppNavigator:
                 arquivo_original = list(novos)[0]
                 # Não renomeia se for temporário
                 if arquivo_original.endswith('.crdownload'):
+                    logger.info("⏳ Aguardando conclusão do download...")
                     time.sleep(3) # Espera mais um pouco
                     arquivos_depois = set(os.listdir(caminho_download))
                     novos = arquivos_depois - arquivos_antes
-                    if not novos: return True
+                    if not novos: 
+                        logger.warning("⚠️ Arquivo temporário não finalizou")
+                        return False
                     arquivo_original = list(novos)[0]
+
+                # Valida o arquivo baixado
+                origem = os.path.join(caminho_download, arquivo_original)
+                tamanho_arquivo = os.path.getsize(origem)
+                
+                if tamanho_arquivo < 1024:  # Menos de 1KB é suspeito
+                    logger.warning(f"⚠️ Arquivo muito pequeno ({tamanho_arquivo} bytes). Possível erro.")
+                    return False
 
                 ext = os.path.splitext(arquivo_original)[1] or ".pdf"
                 # Limpa o nome para evitar caracteres inválidos em caminhos
@@ -330,21 +369,29 @@ class WhatsAppNavigator:
                 novo_nome = f"{num_cliente}_{nome_limpo}{ext}"
                 
                 try:
-                    origem = os.path.join(caminho_download, arquivo_original)
                     destino = os.path.join(caminho_download, novo_nome)
                     
                     # Se o destino já existir, adiciona timestamp para não sobrescrever
                     if os.path.exists(destino):
-                         novo_nome = f"{num_cliente}_{nome_limpo}_{int(time.time())}{ext}"
+                         timestamp = int(time.time())
+                         novo_nome = f"{num_cliente}_{nome_limpo}_{timestamp}{ext}"
                          destino = os.path.join(caminho_download, novo_nome)
+                         logger.info(f"📝 Arquivo já existe, adicionando timestamp: {timestamp}")
                          
                     os.rename(origem, destino)
-                    logger.info(f"📂 Fatura salva como: {novo_nome}")
+                    tamanho_kb = tamanho_arquivo / 1024
+                    logger.info(f"📂 Fatura salva: {novo_nome} ({tamanho_kb:.1f} KB)")
                     return True
                 except Exception as e:
-                    logger.warning(f"⚠️ Erro ao renomear: {e}")
-                    return True # Download funcionou, só o renomear falhou
-            return True
+                    logger.error(f"❌ Erro ao renomear arquivo: {e}")
+                    # Tenta manter o arquivo original ao menos
+                    if os.path.exists(origem):
+                        logger.info(f"📂 Arquivo mantido com nome original: {arquivo_original}")
+                        return True
+                    return False
+            else:
+                logger.warning("⚠️ Nenhum arquivo novo detectado após download")
+                return False
         return False
 
     def executar_passo(self, cliente_dados, nome_bot_alvo, log_callback=None):
