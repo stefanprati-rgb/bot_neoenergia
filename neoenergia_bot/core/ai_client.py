@@ -13,7 +13,7 @@ def consultar_gemini(historico_conversa: str):
     Consulta o modelo Gemini para decidir o próximo passo quando a lógica 
     determinística falha ou encontra um fluxo desconhecido.
     
-    Limitação: Plano gratuito (20 requisições/dia).
+    # Limitação: Gemini 2.0 Flash (Gratuito: 2.000 RPM - RPM = Requisições Pr Mimuto).
     """
     if GEMINI_API_KEY == "SUA_CHAVE_AQUI" or not GEMINI_API_KEY:
         logger.warning("⚠️ API Key do Gemini não configurada em settings.py.")
@@ -24,12 +24,12 @@ def consultar_gemini(historico_conversa: str):
         system_instruction = (
             "Você é um assistente de automação que lê chats de energia. "
             "Classifique a última mensagem do bot em uma destas AÇÕES: "
-            "[ENVIAR_CODIGO, ENVIAR_DOCUMENTO, SELECIONAR_MENU, BAIXAR_FATURA, CONFIRMAR, ERRO, DESCONHECIDO]. "
+            "[ENVIAR_CODIGO, ENVIAR_DOCUMENTO, SELECIONAR_MENU, BAIXAR_FATURA, CONFIRMAR, ERRO, RECUPERAR, REINICIAR, DESCONHECIDO]. "
             "Responda APENAS a ação."
         )
 
         model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash", 
+            model_name="gemini-2.0-flash", 
             system_instruction=system_instruction
         )
 

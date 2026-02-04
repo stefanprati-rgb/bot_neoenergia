@@ -151,11 +151,17 @@ class BotWorker(threading.Thread):
         
         finally:
             if self.driver:
-                self.log("🔌 Fechando navegador...")
-                try:
-                    self.driver.quit()
-                except:
-                    pass
+                # Comportamento Refinado:
+                # Se foi parado pelo usuário (stop_event), MANTÉM o navegador aberto para debug.
+                # Se terminou sozinho ou crashou, FECHA para limpar recursos.
+                if self.stop_event.is_set():
+                    self.log("🛑 Processo parado pelo usuário. Navegador mantido aberto para depuração.")
+                else:
+                    self.log("🔌 Fechando navegador...")
+                    try:
+                        self.driver.quit()
+                    except:
+                        pass
             self.log("💤 Worker finalizado.")
 
     def processar_cliente(self, cliente, nome_bot):
@@ -186,11 +192,19 @@ class BotWorker(threading.Thread):
         tentativas = 0
         ultima_msg_processada = cliente.get('ULTIMA_MSG_PROCESSADA', '')
         
-        while tentativas < 10:
+        while tentativas < 30:
             if self.stop_event.is_set(): return "INTERROMPIDO"
             
-            ultima_msg = self.navigator.ler_ultima_mensagem()
+            ultima_msg, autor = self.navigator.ler_ultima_mensagem()
             
+            # Se a última mensagem foi enviada por nós (ME), aguarda resposta do bot
+            if autor == 'ME':
+                if tentativas % 3 == 0:
+                    self.log(f"⏳ [{cliente_id}] Última mensagem enviada por mim. Aguardando parceiro... (tentativa {tentativas}/10)")
+                time.sleep(3)
+                tentativas += 1
+                continue
+
             # Se a mensagem é a mesma que já processamos, aguarda nova resposta
             if ultima_msg and ultima_msg == ultima_msg_processada:
                 if tentativas % 3 == 0:  # Log a cada 3 tentativas para não poluir

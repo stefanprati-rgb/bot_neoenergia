@@ -1,0 +1,57 @@
+C:\Projetos\Bot Neoenergia\validar_instalacao.py:40: FutureWarning: 
+
+All support for the `google.generativeai` package has ended. It will no longer be receiving 
+updates or bug fixes. Please switch to the `google.genai` package as soon as possible.
+See README for more details:
+
+https://github.com/google-gemini/deprecated-generative-ai-python/blob/main/README.md
+
+  __import__(module)
+============================================================
+­ƒöì VALIDA├ç├âO DE INSTALA├ç├âO - BOT NEOENERGIA
+============================================================
+­ƒÉì Verificando vers├úo do Python...
+   Ô£à Python 3.13.7 - OK
+
+­ƒôª Verificando depend├¬ncias...
+   Ô£à Selenium WebDriver
+   Ô£à Pandas
+   Ô£à OpenPyXL
+   Ô£à Google Generative AI
+   Ô£à WebDriver Manager
+   Ô£à Unidecode
+   Ô£à Python Dotenv
+
+­ƒôü Verificando estrutura de arquivos...
+   Ô£à Pasta de entrada de dados
+   Ô£à Pasta de logs
+   Ô£à Pasta de faturas
+   Ô£à Arquivo de exemplo de configura├º├úo
+   Ô£à Arquivo de depend├¬ncias
+   Ô£à Motor principal
+   Ô£à Configura├º├Áes
+
+­ƒöæ Verificando configura├º├úo da API Key...
+   Ô£à Arquivo .env configurado
+
+­ƒôè Verificando planilha de entrada...
+   Ô£à Planilha encontrada: data/input/base.xlsx
+   ÔÜá´©Å  Colunas faltando: NUMEROCLIENTE, RAZ├âOSOCIALFATURAMENTO
+
+­ƒîÉ Verificando Google Chrome...
+   Ô£à Chrome encontrado: C:\Program Files\Google\Chrome\Application\chrome.exe
+
+============================================================
+­ƒôï RESUMO DA VALIDA├ç├âO
+============================================================
+Ô£à Python
+Ô£à Depend├¬ncias
+Ô£à Estrutura
+Ô£à Configura├º├úo
+ÔØî Planilha
+Ô£à Chrome
+
+============================================================
+ÔÜá´©Å  ATEN├ç├âO: Corrija os problemas acima antes de executar o bot
+­ƒÆí Consulte o QUICKSTART.md para mais informa├º├Áes
+============================================================

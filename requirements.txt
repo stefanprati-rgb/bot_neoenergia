@@ -3,3 +3,5 @@ pandas
 google-generativeai
 openpyxl
 webdriver-manager
+unidecode
+python-dotenv

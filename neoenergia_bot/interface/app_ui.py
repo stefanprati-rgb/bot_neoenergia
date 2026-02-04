@@ -76,8 +76,6 @@ class AppUI:
         )
         self.btn_stop.pack(side="left", padx=10)
 
-        self.btn_stop.pack(side="left", padx=10)
-
         # Retomar Checkbox
         self.check_resume = ttk.Checkbutton(
             control_frame, text="Ignorar clientes já concluídos (Retomar)", 

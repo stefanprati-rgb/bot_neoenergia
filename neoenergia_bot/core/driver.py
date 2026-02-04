@@ -54,13 +54,37 @@ def iniciar_driver():
         chrome_options.add_experimental_option('useAutomationExtension', False)
 
         # 3. Gerenciar e Iniciar Driver
-        logger.info("Verificando/Instalando ChromeDriver via webdriver_manager...")
-        service = Service(ChromeDriverManager().install())
+        driver = None
         
-        driver = webdriver.Chrome(service=service, options=chrome_options)
+        # Tenta usar webdriver-manager primeiro
+        try:
+            logger.info("Verificando/Instalando ChromeDriver via webdriver_manager...")
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            logger.info("✅ ChromeDriver instalado via webdriver-manager")
+        except Exception as e:
+            logger.warning(f"⚠️ webdriver-manager falhou: {str(e)}")
+            logger.info("🔄 Tentando usar ChromeDriver do sistema...")
+            
+            # Fallback: Tenta usar ChromeDriver do PATH do sistema
+            try:
+                driver = webdriver.Chrome(options=chrome_options)
+                logger.info("✅ Usando ChromeDriver do sistema (PATH)")
+            except Exception as e2:
+                logger.error(f"❌ ChromeDriver não encontrado no sistema: {str(e2)}")
+                logger.info("💡 SOLUÇÃO:")
+                logger.info("   1. Verifique sua conexão com a internet")
+                logger.info("   2. OU baixe o ChromeDriver manualmente:")
+                logger.info("      https://googlechromelabs.github.io/chrome-for-testing/")
+                logger.info("   3. Adicione o ChromeDriver ao PATH do Windows")
+                logger.info("   4. OU coloque chromedriver.exe na pasta do projeto")
+                raise Exception("ChromeDriver não disponível. Verifique conexão ou instale manualmente.")
         
-        logger.info("✅ Selenium Driver iniciado com sucesso.")
-        return driver
+        if driver:
+            logger.info("✅ Selenium Driver iniciado com sucesso.")
+            return driver
+        else:
+            raise Exception("Falha ao iniciar o driver")
 
     except Exception as e:
         logger.error(f"❌ Erro ao iniciar o driver: {str(e)}")

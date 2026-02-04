@@ -248,24 +248,41 @@ class WhatsAppNavigator:
 
     def ler_ultima_mensagem(self):
         """
-        Lê o texto da última bolha de mensagem RECEBIDA (do bot).
-        Ignora mensagens enviadas pelo robô (message-out).
+        Retorna uma tupla (texto, autor) da última mensagem visível no chat.
+        autor: 'BOT' (message-in) ou 'ME' (message-out)
         """
         try:
-            # Pega APENAS as mensagens recebidas (do bot)
-            msgs_recebidas = self.driver.find_elements(By.XPATH, "//div[contains(@class, 'message-in')]")
-            if not msgs_recebidas:
-                return ""
+            # Pega TODAS as mensagens (in e out) ordenadas por ordem de aparição no DOM
+            # O WhatsApp Web estrutura as mensagens sequencialmente, então a última div é a mais recente.
+            todas_msgs = self.driver.find_elements(By.XPATH, "//div[contains(@class, 'message-in') or contains(@class, 'message-out')]")
             
-            # Pega a última mensagem recebida
-            ultima_recebida = msgs_recebidas[-1]
+            if not todas_msgs:
+                return "", "VAZIO"
             
-            # Extrai o texto
-            texto_el = ultima_recebida.find_element(*selectors.LAST_MESSAGE_TEXT)
-            return texto_el.text
+            # Pega a última mensagem absoluta
+            ultima_msg = todas_msgs[-1]
             
-        except Exception:
-            return ""
+            # Determina o autor pela classe
+            classes = ultima_msg.get_attribute("class")
+            if "message-in" in classes:
+                autor = "BOT"
+            elif "message-out" in classes:
+                autor = "ME"
+            else:
+                autor = "DESCONHECIDO"
+            
+            # Extrai o texto (se houver)
+            try:
+                texto_el = ultima_msg.find_element(*selectors.LAST_MESSAGE_TEXT)
+                texto = texto_el.text
+            except:
+                texto = "[Mídia/Arquivo/Outros]"
+                
+            return texto, autor
+            
+        except Exception as e:
+            # logger.error(f"Erro ao ler mensagens: {e}") # Log opcional para não poluir
+            return "", "ERRO"
 
     def _baixar_anexo(self):
         """Tenta baixar a fatura usando múltiplas estratégias e monitora a pasta de destino."""
@@ -448,7 +465,12 @@ class WhatsAppNavigator:
             return 'INICIO', 'EM_ANDAMENTO'
 
         # 4. Leitura da Resposta do Bot
-        msg_bot = self.ler_ultima_mensagem()
+        msg_bot, autor = self.ler_ultima_mensagem()
+
+        # Se a última mensagem foi minha (ME), ainda estamos aguardando resposta.
+        if autor == 'ME':
+            # log("⏳ Última mensagem é minha. Aguardando parceiro...")
+            return estado_atual, 'EM_ANDAMENTO'
 
         # Só processa se houver uma mensagem nova (diferente da última que o robô reagiu)
         if msg_bot == ultima_msg_lida:
