@@ -4,7 +4,8 @@ import re
 import logging
 
 # Configuração de logging básica
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# REMOVIDO: Usar logger centralizado do neoenergia_bot.utils.logger_config
 
 def clean_document(doc):
     """
